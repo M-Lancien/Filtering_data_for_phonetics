@@ -1,0 +1,149 @@
+###################################
+#
+# Multivariate outlier detection
+# 
+# 
+#
+# see https://www.r-bloggers.com/outlier-detection-with-mahalanobis-distance/
+#
+# Mélanie Lancien, Juin 2020, SLI Unil
+##################################
+
+library(mvoutlier)
+library(dplyr)
+library(MASS)
+library(tidyverse)
+library(ggplot2)
+
+
+### Reading Data file 
+
+metrics=read.csv(file="metrics_reprisApColloque_-iRuR_fitrageFormants_goMahala.csv",sep=";",
+                 head=TRUE, fileEncoding = "UTF-8-BOM")
+#metrics$Classe_vocalique=as.factor(metrics$Classe_vocalique)
+#levels(metrics$Classe_vocalique)
+
+
+### I created a variable containing Vowel ID * Speech Style * Speaker ID
+### because I wanted to compute the data point distance to the mean for each style-speaker-vowel type but you 
+### can change this and only compute it for each vowel type or each vowel type and each speaker
+### or whatever gives the best results with your data
+
+
+metrics$ClasseStyleLOC= paste(metrics$Classe_vocalique,"-",metrics$Style, "-", metrics$Locuteur)
+
+### Subset of my dataset containing only what I need (so it runs faster)
+metrics2= subset(metrics, select=c(Locuteur,Style,start_time, end_time, Classe_vocalique, ClasseStyleLOC,duration.s., mean_F1.Hz., mean_F2.Hz.))
+
+### New variable that I will use for the loop 
+
+groups=levels(metrics2$ClasseStyleLOC)
+
+
+### Loop
+
+for (group in groups) {
+  donnees_classe = metrics2[subset(metrics2, select="ClasseStyleLOC")==group,]
+### Calculate Mahalanobis with predictor variables (= F1, F2, and duration)
+  donnees_classe2=donnees_classe[,-(1:6)] ### Remove start, end, and class to compute dist on dur F1 and F2
+  donnees_classe2$MD = sqrt(mahalanobis(donnees_classe2, colMeans(donnees_classe2), cov(donnees_classe2)))
+  dat= left_join(donnees_classe, donnees_classe2)
+  print(group)
+  write.table(dat,file=paste(group, "_mahalanobis_ClasseStyleLoc.txt", sep=""),sep="\t",quote=F,row.names=F) ### I wanted to print the distances in textfiles to explore it by hand, but you don't have to
+  }
+### I did some changes bu hand in the files I printed so I had to read them all again 
+temp = list.files(pattern="*_mahalanobis_ClasseStyleLoc.txt")
+myfiles = lapply(temp, read.delim)
+files=plyr::ldply(myfiles)
+
+
+### Then I merged my small datasets containing the Mahlanobis distances ("files") with my huge dataset from the begining ("metrics")
+
+data= left_join(metrics, files, by=c("Locuteur.x", "Style", "start_time", "end_time", "duration.s.", "mean_F1.Hz.", "mean_F2.Hz."))
+
+
+### a few visualizations and tests to figure out what should be the threshold for pruning
+
+ggplot(data=subset(data, MD.y<=2.5), aes (x=MD.y))+ geom_density()
+ggplot(data=subset(data, MD.y<=4), aes (y=MD.y))+  geom_boxplot()+ ylab("Distance (nb d'écarts-types)")+theme(axis.title.x=element_blank(),
+                                                                                                              axis.text.x=element_blank(),
+                                                                                                              axis.ticks.x=element_blank())
+
+
+### I created a variable named "outlier" and categorized my data points as valid ("Données") or not valid ("Valeurs extrêmes")
+### based on the threshold I chose (here 2 sd)
+
+data$outlier <- "Données"
+data$outlier[md > 2] <- "Valeurs extrêmes"  
+                                                                                                              
+### data distribution and Mahalanobis distance distribution 
+table(data$outlier)
+ggplot(data=data, aes (x=MD.y))+ geom_density()
+ggplot(data=data, aes (y=mean_F1.Hz., x=Classe_vocalique.y, fill=Classe_vocalique.y))+ geom_boxplot()+ ylim(c(0,1000))+
+  facet_wrap(~outlier)
+md=as.numeric(data$MD.y)
+md=na.omit(md)
+mean(md)
+max(md)
+min(md)
+median(md)
+quantile(md, probs = c(0.05,0.25,0.5,0.75,.8,.85,.88, .9,0.95))
+
+ 
+
+tableau=metrics %>% 
+  group_by(Locuteur.x, Style, Classe_vocalique, .drop=FALSE)%>%
+  summarise(n=n())
+
+### Those plots were to compare F1 F2 and duration values for vowels that were categorized as 
+### valid data points vs not valid data point 
+
+data$Classe_vocalique.y <- factor(data$Classe_vocalique.y , 
+                                  levels=c("i#","iK", "y#", "yR", "yK",  "e#", "2#", "E#", "EK",
+                                           "ER","a#", "aC", "A#", "O#", "OK","o#", "u#"))
+
+f1=ggplot(data, aes(y=data$mean_F1.Hz.,x=data$Classe_vocalique.y)) +
+  geom_boxplot(aes(fill = data$Classe_vocalique.y), alpha=0.6)+
+  theme(axis.title.x=element_blank(), axis.ticks.x=element_blank(), 
+        axis.text=element_text(size=14),axis.title=element_text(size=14), 
+        plot.title = element_text(size = 14), legend.title = element_text(size = 14),
+        legend.text = element_text( size = 14),strip.text.x = element_text(size = 14),
+        strip.text.y = element_text(size = 14))+
+  labs(title = 'Distribution des F1 moyens en fonction de la classe et de la catégorisation en point de donnée vs. valeur extrême', x='Classe', 
+       y="Moyenne de F1 (Hz)", size="", fill="Classe")+
+  scale_y_continuous(limits=c(0,1200),breaks=seq(0,1200,100))+
+  theme(legend.position = "none") +
+  facet_grid(~data$outlier)
+
+
+f2=ggplot(data, aes(y=data$mean_F2.Hz.,x=data$Classe_vocalique.y)) +
+  geom_boxplot(aes(fill = data$Classe_vocalique.y), alpha=0.6)+
+  theme(axis.title.x=element_blank(), axis.ticks.x=element_blank(), 
+        axis.text=element_text(size=14),axis.title=element_text(size=14), 
+        plot.title = element_text(size = 14), legend.title = element_text(size = 14),
+        legend.text = element_text( size = 14),strip.text.x = element_text(size = 14),
+        strip.text.y = element_text(size = 14),legend.position = "bottom")+
+  labs(title = 'Distribution des F2 moyens en fonction de la classe et de la catégorisation en point de donnée vs. valeur extrême', x='Classe', 
+       y="Moyenne de F2 (Hz)", size="", fill="Classe")+
+  scale_y_continuous(limits=c(400,3000),breaks=seq(400,3000,200))+
+  facet_grid(~data$outlier)
+
+dur=ggplot(data, aes(y=data$duration.s.,x=data$Classe_vocalique.y)) +
+  geom_boxplot(aes(fill = data$Classe_vocalique.y), alpha=0.6)+
+  theme(axis.title.x=element_blank(), axis.ticks.x=element_blank(), 
+        axis.text=element_text(size=14),axis.title=element_text(size=14), 
+        plot.title = element_text(size = 14), legend.title = element_text(size = 14),
+        legend.text = element_text( size = 14),strip.text.x = element_text(size = 14),
+        strip.text.y = element_text(size = 14))+
+  labs(title = 'Distribution des durées en fonction de la classe et de la catégorisation en point de donnée vs. valeur extrême', x='Classe', 
+       y="Durée (secondes)", size="", fill="Classe")+
+  scale_y_continuous(limits=c(0,0.5),breaks=seq(0,0.5,0.05))+
+  theme(legend.position = "none") +
+  facet_grid(~data$outlier)
+
+
+grid.arrange(dur, f1, f2, nrow=3) 
+
+
+### And finally I write the full dataset with Mahalanobis distances and my whole data 
+write.table(data,file="metrics_NoOutliers_byClassXstyleXLoc.txt",sep="\t",quote=F,row.names=F)
